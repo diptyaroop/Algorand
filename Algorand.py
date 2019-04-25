@@ -18,6 +18,9 @@ class GlobalState:
         self.pubKeyDB = {}
         self.genesisMsg = "We are building the best Algorand Discrete Event Simulator"
         self.totalStake = 0.0
+        self.t_proposer = 5
+        self.t_step = 5
+        self.t_final = 5
 
     def setBlockDelay(self, mean, std):
         s = np.random.normal(mean, std, gs.numNodes * gs.numNodes)
@@ -74,6 +77,7 @@ class Node:
         self.prKey = None
         self.pubKey = None
         self.stake = 0.0
+        self.bin_result = []
         return
 
     def setNeighbors(self, nbr):
@@ -151,44 +155,53 @@ class Node:
         digest=int(m.hexdigest(),16)& ((1<<256)-1)#256 bit pseudo random
         return digest # returns 256 b integer
 
+    def nCr(self, n, r):
+        return math.factorial(n)/(math.factorial(r) * math.factorial(n-r))
 
-    def binomial_sum(self, j,n,p):
-        bin_result = []
-        if j == 0:
-            bin_result.append(binom.rvs(size=0,n=n,p=p))
-            return bin_result[0]
-        if j < len(bin_result):
-            return bin_result[j]
+    def binomial_sum(self, j, w, p):
+        print("CHECK IF THIS IS WORKING CORRECTLY")
+        k=0
+        binoSum = 0.0
+        while(k<=j):
+            binoSum += self.nCr(w, k) * pow(p, k) * pow((1-p), (w-k))
+            k += 1
+        print(j,w,p, binoSum)
+        return binoSum
 
-        bin_result.append( bin_result[-1]+binom.rvs(size=j,n=n,p=p) )
-        return bin_result[-1]
+        '''if j == 0:
+            self.bin_result.append(binom.rvs(size=0,n=n,p=p))
+            return self.bin_result[0]
+        if j < len(self.bin_result):
+            return self.bin_result[j]
+        self.bin_result.append(self.bin_result[-1]+binom.rvs(size=j,n=n,p=p) )
+        return self.bin_result[-1]'''
 
     def calc_hashlen(self, my_hash):
-        #bits = 0
-        #while my_hash != 0:
-        #    my_hash = my_hash >> 1
-        #    bits += 1
-        #return bits
-        return (len(my_hash))
+        bits = 0
+        while my_hash != 0:
+            my_hash = my_hash >> 1
+            bits += 1
+        return bits
+        #return (len(my_hash))
 
     def sortition(self, secret_key, seed, threshold, role, w, W):
         pi = self.PRG(str(seed), role)  # seed = <hash of prev rnd || rnd num || step num >
         #print(pi)
         signature = secret_key.sign(str(pi).encode('utf-8')) # my_hash has the signature
         my_hash = signature.hex()
-        #v = node[0].pubKey.verify(my_hash, str(pi).encode('utf-8'))
         p = threshold/W
         j = 0
-        # hashlen = len(my_hash)
-        hashlen = self.calc_hashlen(my_hash)
         my_hash = int(my_hash, 16)
+        hashlen = self.calc_hashlen(my_hash)
         hash_2hashLen = my_hash/pow(2,hashlen)
         l_limit = self.binomial_sum(j,w,p)
         u_limit = self.binomial_sum(j+1,w,p)
-        while hash_2hashLen not in range(l_limit,u_limit):
+        print(hash_2hashLen, l_limit, u_limit, j)
+        while hash_2hashLen<l_limit or hash_2hashLen>=u_limit:
             j += 1
             l_limit = self.binomial_sum(j,w,p)
             u_limit = self.binomial_sum(j+1,w,p)
+            print(l_limit, u_limit, j)
 
         return my_hash,pi,j
 
@@ -236,13 +249,13 @@ def start(gs, nodes):
     #print(len(nodes))
     for node in nodes:
         print(node.id, node.stake)
-        threshold = 5
+        threshold = gs.t_proposer
         role = "proposer"
         w = node.stake
         W = gs.totalStake
         hashVal, pi, subUser = node.sortition(node.prKey, "random_seed", threshold, role, w, W)
-        #print("Node = ", node.id, "stake = ", node.stake, hashVal, pi, subUser)
-        print("****")
+        print("Node = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
+        #print("****")
     while True:
         try:
             ele = heapq.heappop(eventQ)
@@ -271,7 +284,7 @@ if __name__ == "__main__":
 
     for i in range(gs.numNodes):
         node.append(Node(i))
-        numNeighbors = math.floor(random.uniform(1, 4.1)) # change later to 3, 8.1
+        numNeighbors = math.floor(random.uniform(2, 4.1))
         nbrs = []
         while(numNeighbors>0):
             newNbr = random.randint(1, gs.numNodes) - 1 
