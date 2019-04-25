@@ -1,0 +1,295 @@
+import heapq
+import random
+import math
+import ecdsa
+import numpy as np
+import hashlib
+from scipy.stats import binom
+
+seqID = 0
+
+class GlobalState:
+    def __init__(self):
+        self.seqID = 0
+        self.time = 0
+        self.numNodes = 5
+        self.blockDelay = []
+        self.nonBlockDelay = []
+        self.pubKeyDB = {}
+        self.genesisMsg = "We are building the best Algorand Discrete Event Simulator"
+        self.totalStake = 0.0
+
+    def setBlockDelay(self, mean, std):
+        s = np.random.normal(mean, std, gs.numNodes * gs.numNodes)
+        index=0
+        for i in range(gs.numNodes):
+            tmpList = [0.0] * gs.numNodes
+            for j in range(i+1):
+                if(i==j):
+                    tmpList[i] = 0
+                else:
+                    tmpList[j] = round(max(0, s[index])/1000, 3) # in msec, so dividing by 1000 to make it in sec
+                    index+=1
+            self.blockDelay.append(tmpList)
+        for i in range(gs.numNodes):
+            for j in range(i+1):
+                self.blockDelay[j][i] = self.blockDelay[i][j]
+
+        
+    def setNonBlockDelay(self, mean, std):
+        s = np.random.normal(mean, std, gs.numNodes * gs.numNodes)
+        index=0
+        for i in range(gs.numNodes):
+            tmpList = [0.0] * gs.numNodes
+            for j in range(i+1):
+                if(i==j):
+                    tmpList[i] = 0
+                else:
+                    tmpList[j] = round(max(0, s[index])/1000, 3) # in msec, so dividing by 1000 to make it in sec
+                    index+=1
+            self.nonBlockDelay.append(tmpList)
+        for i in range(gs.numNodes):
+            for j in range(i+1):
+                self.nonBlockDelay[j][i] = self.nonBlockDelay[i][j]
+
+    def storePublicKeys(self, nodes):
+        for node in nodes:
+            self.pubKeyDB[node.id] = node.pubKey
+
+    def validateSignature(self, event):
+        return True
+
+
+    def incrementSeqID(self):
+        self.seqID = self.seqID + 1
+    
+    def addTime(self, val):
+        self.time = self.time + val
+
+
+class Node:
+    
+    def __init__(self, identity):
+        self.id = identity
+        self.prKey = None
+        self.pubKey = None
+        self.stake = 0.0
+        return
+
+    def setNeighbors(self, nbr):
+        self.neighbors = nbr
+
+    def generateKeyPair(self):
+        self.prKey = ecdsa.SigningKey.generate(curve=ecdsa.SECP256k1) #Bitcoin eleptic curve=ecdsa.SECP256k1
+        self.pubKey = self.prKey.get_verifying_key()
+        #signature = self.prKey.sign(b"message")
+        #try:
+        #    node.pubKey.verify(signature, b"message")
+        #    print("good signature")
+        #except BadSignatureError:
+        #    print("BAD SIGNATURE")
+        #open("private.pem","wb").write(sk.to_pem())
+        #open("public.pem","wb").write(vk.to_pem())
+
+    def assignInitialStake(self):
+        self.stake = math.floor(random.uniform(1, 50.1))
+        #print("stake = ",self.stake)
+        return
+
+    def processEvent(self):
+        return
+
+    def send(self, event):
+        print("Node "+str(event.getSrc()) + " send to Node " + str(event.getDest()) + " at time = " + str(event.getTimeStart()))
+        if(event.msg.checkIfNodeVisited(self.id) == True):
+            print("Silently discarding")
+            return # silently discarding
+        event.msg.addNodeToVisited(self.id)
+        newEvent = Event()
+        newEvent.timeStart = event.getTimeEnd()
+        newEvent.src = event.getSrc()
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = event.getDest()
+        newEvent.action = "recv"
+        newEvent.msg = event.msg
+        #curNode = newEvent.getSrc()
+        #for nbr in node[curNode].neighbors:
+        #print("Node = "+str(curNode)+" , neighbor = "+str(nbr))
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+        return
+    
+    def recv(self, event):
+        print("Node "+str(event.getDest()) + " recvd from Node " + str(event.getSrc()) + " at time = " + str(event.getTimeStart()))
+        if (gs.validateSignature(event) == False):
+            print("Invalid signature, abort\n")
+            return
+        curNode = event.getDest()
+        try:
+            for nbr in node[curNode].neighbors:
+                newEvent = Event()
+                newEvent.timeStart = event.getTimeEnd()
+                newEvent.src = event.getDest()
+                newEvent.timeEnd = round(newEvent.timeStart + gs.blockDelay[curNode][nbr], 3)
+                newEvent.dest = nbr
+                newEvent.msg = event.msg
+                newEvent.action = "send"
+                heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+                gs.incrementSeqID()
+        except:
+            print("EXCEPTION")
+        return
+
+    def PRG(self, seed, role):
+        #Solution 1
+        #print(random.getrandbits(256))
+        #Solution 2
+        #value=np.random.randint(0,256)
+        #local_message="abcdads"
+        #msg=local_message+str(local_message)
+        m=hashlib.sha512((str(seed)+role).encode('utf-8'))
+        digest=int(m.hexdigest(),16)& ((1<<256)-1)#256 bit pseudo random
+        return digest # returns 256 b integer
+
+
+    def binomial_sum(self, j,n,p):
+        bin_result = []
+        if j == 0:
+            bin_result.append(binom.rvs(size=0,n=n,p=p))
+            return bin_result[0]
+        if j < len(bin_result):
+            return bin_result[j]
+
+        bin_result.append( bin_result[-1]+binom.rvs(size=j,n=n,p=p) )
+        return bin_result[-1]
+
+    def calc_hashlen(self, my_hash):
+        #bits = 0
+        #while my_hash != 0:
+        #    my_hash = my_hash >> 1
+        #    bits += 1
+        #return bits
+        return (len(my_hash))
+
+    def sortition(self, secret_key, seed, threshold, role, w, W):
+        pi = self.PRG(str(seed), role)  # seed = <hash of prev rnd || rnd num || step num >
+        #print(pi)
+        signature = secret_key.sign(str(pi).encode('utf-8')) # my_hash has the signature
+        my_hash = signature.hex()
+        #v = node[0].pubKey.verify(my_hash, str(pi).encode('utf-8'))
+        p = threshold/W
+        j = 0
+        # hashlen = len(my_hash)
+        hashlen = self.calc_hashlen(my_hash)
+        my_hash = int(my_hash, 16)
+        hash_2hashLen = my_hash/pow(2,hashlen)
+        l_limit = self.binomial_sum(j,w,p)
+        u_limit = self.binomial_sum(j+1,w,p)
+        while hash_2hashLen not in range(l_limit,u_limit):
+            j += 1
+            l_limit = self.binomial_sum(j,w,p)
+            u_limit = self.binomial_sum(j+1,w,p)
+
+        return my_hash,pi,j
+
+
+class Event:
+    def __init__(self, start=0, delay=0, src=0, dest=0, action="none", msg="none"):
+        self.timeStart = start
+        self.src = src
+        self.dest = dest
+        self.timeEnd = self.timeStart + delay
+        self.action = action
+        self.msg = msg
+
+    def getAction(self):
+        return self.action
+    def getSrc(self):
+        return self.src
+    def getDest(self):
+        return self.dest
+    def getTimeStart(self):
+        return self.timeStart
+    
+    def getTimeEnd(self):
+        return self.timeEnd
+
+class Message:
+    def __init__(self, msg):
+        self.msg = msg
+        self.nodesVisited=set()
+    
+    def addNodeToVisited(self, node):
+        self.nodesVisited.add(node)
+
+    def checkIfNodeVisited(self, node):
+        if node in self.nodesVisited:
+            return True
+        return False        
+
+class Block:
+    def __init__(self, msg):
+        return
+
+
+def start(gs, nodes):
+    #print(len(nodes))
+    for node in nodes:
+        print(node.id, node.stake)
+        threshold = 5
+        role = "proposer"
+        w = node.stake
+        W = gs.totalStake
+        hashVal, pi, subUser = node.sortition(node.prKey, "random_seed", threshold, role, w, W)
+        #print("Node = ", node.id, "stake = ", node.stake, hashVal, pi, subUser)
+        print("****")
+    while True:
+        try:
+            ele = heapq.heappop(eventQ)
+            curTime = round(ele[0], 3)
+            gs.time = curTime
+            print("current time = " + str(gs.time))
+            curEvent = ele[2]
+            if curEvent.getAction() == "send":
+                node[curEvent.src].send(curEvent)
+            elif curEvent.getAction() == "recv":
+                node[curEvent.dest].recv(curEvent)
+        except IndexError as e:
+            print("No events remaining. ", e)
+            break
+    return
+
+
+
+if __name__ == "__main__":
+    gs = GlobalState()
+    node = []
+    eventQ = []
+    gs.time = 0
+    gs.setBlockDelay(200, 400)
+    gs.setNonBlockDelay(30, 64)
+
+    for i in range(gs.numNodes):
+        node.append(Node(i))
+        numNeighbors = math.floor(random.uniform(1, 4.1)) # change later to 3, 8.1
+        nbrs = []
+        while(numNeighbors>0):
+            newNbr = random.randint(1, gs.numNodes) - 1 
+            if(newNbr in nbrs or newNbr == i):
+                continue
+            nbrs.append(newNbr)
+            numNeighbors = numNeighbors - 1
+        node[i].generateKeyPair()
+        node[i].assignInitialStake()
+        gs.totalStake += node[i].stake
+        node[i].setNeighbors(nbrs)
+        #print(i, ":", node[i].neighbors)
+    gs.storePublicKeys(node)
+    msg = Message("a")
+    event = Event(gs.time, gs.blockDelay[0][1], 0, 1, "send", msg)
+
+    #heapq.heappush(eventQ, (gs.time, gs.seqID, event))
+    #gs.incrementSeqID()
+    #heapq.heappush(eventQ, (gs.time, gs.seqID, Event(gs.time, gs.blockDelay[0][2], 0, 2, "send", "a")))
+    #gs.incrementSeqID()
+    start(gs, node)
