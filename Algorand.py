@@ -21,6 +21,7 @@ class GlobalState:
         self.t_proposer = 5
         self.t_step = 5
         self.t_final = 5
+        self.lambda_proposal = 3
 
     def setBlockDelay(self, mean, std):
         s = np.random.normal(mean, std, gs.numNodes * gs.numNodes)
@@ -162,10 +163,10 @@ class Node:
         print("CHECK IF THIS IS WORKING CORRECTLY")
         k=0
         binoSum = 0.0
-        while(k<=j):
+        while(k<=j and j<=w):
             binoSum += self.nCr(w, k) * pow(p, k) * pow((1-p), (w-k))
             k += 1
-        print(j,w,p, binoSum)
+        #print(j,w,p, binoSum)
         return binoSum
 
         '''if j == 0:
@@ -197,13 +198,30 @@ class Node:
         l_limit = self.binomial_sum(j,w,p)
         u_limit = self.binomial_sum(j+1,w,p)
         print(hash_2hashLen, l_limit, u_limit, j)
-        while hash_2hashLen<l_limit or hash_2hashLen>=u_limit:
+        while (hash_2hashLen<l_limit or hash_2hashLen>=u_limit) and j<=w:
             j += 1
             l_limit = self.binomial_sum(j,w,p)
             u_limit = self.binomial_sum(j+1,w,p)
             print(l_limit, u_limit, j)
-
         return my_hash,pi,j
+
+    def computePriorityForSubUser(self, my_hash, subUserIndex):
+        hashObj = hashlib.sha256()
+        hashObj.update((str(my_hash)+str(subUserIndex)).encode("utf-8"))
+        return hashObj.hexdigest()
+
+    def waitForProposals(self, gs):
+        #add event to wait for gs.lambda_proposal time
+        return
+
+    def gossip(self, gs, my_hash, pi, subUser, priority):
+        payload = str(my_hash)+str(subUser)+str(priority) # also concatenate round no. here
+        #self.send(payload) # send payload to neighbors. How many neighbors ?
+        self.waitForProposals(gs)
+        
+    def proposeBlock(self):
+        #broadcast block ot be proposed, delay = node.blockDelay
+        return
 
 
 class Event:
@@ -254,8 +272,18 @@ def start(gs, nodes):
         w = node.stake
         W = gs.totalStake
         hashVal, pi, subUser = node.sortition(node.prKey, "random_seed", threshold, role, w, W)
+        if(subUser>0): # node selected as block proposer
+            highestPriority = -1
+            subUserWithHighestPriority = -1
+            for j in range(0, subUser):
+                priority = node.computePriorityForSubUser(hashVal, j)
+                if(highestPriority<0 or highestPriority>priority):
+                    highestPriority = priority
+                    subUserWithHighestPriority = j
+            node.gossip(gs, hashVal, pi, subUserWithHighestPriority, highestPriority)                
         print("Node = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
-        #print("****")
+        print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
+    #SORTITION PART DONE, NOW BLOCK PROPOSAL PART
     while True:
         try:
             ele = heapq.heappop(eventQ)
@@ -267,6 +295,8 @@ def start(gs, nodes):
                 node[curEvent.src].send(curEvent)
             elif curEvent.getAction() == "recv":
                 node[curEvent.dest].recv(curEvent)
+            elif curEvent.getAction() == "proposeBlock":
+                node[curEvent.src].proposeBlock(curEvent)
         except IndexError as e:
             print("No events remaining. ", e)
             break
