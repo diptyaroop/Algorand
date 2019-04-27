@@ -60,7 +60,7 @@ class GlobalState:
         tmpStake = np.random.uniform(1, 50.1, len(nodes))
         index=0
         for node in nodes:
-            print(tmpStake[index])
+            #print(tmpStake[index])
             node.stake = math.floor(tmpStake[index])
             index +=1
             gs.totalStake +=node.stake
@@ -91,6 +91,7 @@ class Node:
         self.pubKey = None
         self.stake = 0.0
         self.bin_result = []
+        self.state = "init"
         return
 
     def setNeighbors(self, nbr):
@@ -139,20 +140,25 @@ class Node:
             print("Invalid signature, abort\n")
             return
         curNode = event.getDest()
-        try:
-            for nbr in node[curNode].neighbors:
-                newEvent = Event()
-                newEvent.timeStart = event.getTimeEnd()
-                newEvent.src = event.getDest()
-                newEvent.timeEnd = round(newEvent.timeStart + gs.blockDelay[curNode][nbr], 3)
-                newEvent.dest = nbr
-                newEvent.msg = event.msg
-                newEvent.action = "send"
-                heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
-                gs.incrementSeqID()
-        except:
-            print("EXCEPTION")
-        return
+        #print(curNode, self.id)
+        if(node[curNode].state == "waiting_for_proposal"):
+            #add_to_input_buffer
+            print()
+        else:
+            try:
+                for nbr in node[curNode].neighbors:
+                    newEvent = Event()
+                    newEvent.timeStart = event.getTimeEnd()
+                    newEvent.src = event.getDest()
+                    newEvent.timeEnd = round(newEvent.timeStart + gs.blockDelay[curNode][nbr], 3)
+                    newEvent.dest = nbr
+                    newEvent.msg = event.msg
+                    newEvent.action = "send"
+                    heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+                    gs.incrementSeqID()
+            except:
+                print("EXCEPTION")
+            return
 
     def PRG(self, seed, role):
         #Solution 1
@@ -211,7 +217,7 @@ class Node:
             j += 1
             l_limit = self.binomial_sum(j,w,p)
             u_limit = self.binomial_sum(j+1,w,p)
-            print(l_limit, u_limit, j)
+            #print(l_limit, u_limit, j)
         return my_hash,pi,j
 
     def computePriorityForSubUser(self, my_hash, subUserIndex):
@@ -220,11 +226,24 @@ class Node:
         return hashObj.hexdigest()
 
     def waitForProposals(self, gs):
+        self.state = "waiting_for_proposal"
         #add event to wait for gs.lambda_proposal time
         return
 
     def gossip(self, gs, my_hash, pi, subUser, priority):
         payload = str(my_hash)+str(subUser)+str(priority) # also concatenate round no. here
+        for nbr in self.neighbors:
+            msg = Message(payload)
+            print(self.id, "Gossiping to ", nbr)
+            event = Event()
+            event.msg = msg
+            event.src = self.id
+            event.dest = nbr
+            event.action = "send"
+            event.timeStart = gs.time
+            event.timeEnd = event.timeStart + gs.nonBlockDelay[self.id][nbr]
+            heapq.heappush(eventQ, (gs.time, gs.seqID, event))
+            gs.incrementSeqID()
         #self.send(payload) # send payload to neighbors. How many neighbors ?
         self.waitForProposals(gs)
         
@@ -292,7 +311,7 @@ def start(gs, nodes):
                     subUserWithHighestPriority = j
             node.gossip(gs, hashVal, pi, subUserWithHighestPriority, highestPriority)                
         print("Node = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
-        #print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
+    print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
     #SORTITION PART DONE, NOW BLOCK PROPOSAL PART
     while True:
         try:
@@ -302,11 +321,11 @@ def start(gs, nodes):
             print("current time = " + str(gs.time))
             curEvent = ele[2]
             if curEvent.getAction() == "send":
-                node[curEvent.src].send(curEvent)
+                nodes[curEvent.src].send(curEvent)
             elif curEvent.getAction() == "recv":
-                node[curEvent.dest].recv(curEvent)
+                nodes[curEvent.dest].recv(curEvent)
             elif curEvent.getAction() == "proposeBlock":
-                node[curEvent.src].proposeBlock(curEvent)
+                nodes[curEvent.src].proposeBlock(curEvent)
         except IndexError as e:
             print("No events remaining. ", e)
             break
