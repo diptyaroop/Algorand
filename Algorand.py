@@ -55,6 +55,18 @@ class GlobalState:
         for i in range(gs.numNodes):
             for j in range(i+1):
                 self.nonBlockDelay[j][i] = self.nonBlockDelay[i][j]
+    
+    def assignInitialStake(self, nodes):
+        tmpStake = np.random.uniform(1, 50.1, len(nodes))
+        index=0
+        for node in nodes:
+            print(tmpStake[index])
+            node.stake = math.floor(tmpStake[index])
+            index +=1
+            gs.totalStake +=node.stake
+        self.stake = math.floor(random.uniform(1, 50.1))
+        #print("stake = ",self.stake)
+        return
 
     def storePublicKeys(self, nodes):
         for node in nodes:
@@ -96,10 +108,7 @@ class Node:
         #open("private.pem","wb").write(sk.to_pem())
         #open("public.pem","wb").write(vk.to_pem())
 
-    def assignInitialStake(self):
-        self.stake = math.floor(random.uniform(1, 50.1))
-        #print("stake = ",self.stake)
-        return
+    
 
     def processEvent(self):
         return
@@ -160,10 +169,10 @@ class Node:
         return math.factorial(n)/(math.factorial(r) * math.factorial(n-r))
 
     def binomial_sum(self, j, w, p):
-        print("CHECK IF THIS IS WORKING CORRECTLY")
+        #print("CHECK IF THIS IS WORKING CORRECTLY")
         k=0
         binoSum = 0.0
-        while(k<=j and j<=w):
+        while(k<j and j<=w):
             binoSum += self.nCr(w, k) * pow(p, k) * pow((1-p), (w-k))
             k += 1
         #print(j,w,p, binoSum)
@@ -197,7 +206,7 @@ class Node:
         hash_2hashLen = my_hash/pow(2,hashlen)
         l_limit = self.binomial_sum(j,w,p)
         u_limit = self.binomial_sum(j+1,w,p)
-        print(hash_2hashLen, l_limit, u_limit, j)
+        #print(hash_2hashLen, l_limit, u_limit, j)
         while (hash_2hashLen<l_limit or hash_2hashLen>=u_limit) and j<=w:
             j += 1
             l_limit = self.binomial_sum(j,w,p)
@@ -277,12 +286,13 @@ def start(gs, nodes):
             subUserWithHighestPriority = -1
             for j in range(0, subUser):
                 priority = node.computePriorityForSubUser(hashVal, j)
+                priority = int(priority, 16)
                 if(highestPriority<0 or highestPriority>priority):
                     highestPriority = priority
                     subUserWithHighestPriority = j
             node.gossip(gs, hashVal, pi, subUserWithHighestPriority, highestPriority)                
         print("Node = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
-        print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
+        #print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
     #SORTITION PART DONE, NOW BLOCK PROPOSAL PART
     while True:
         try:
@@ -323,10 +333,9 @@ if __name__ == "__main__":
             nbrs.append(newNbr)
             numNeighbors = numNeighbors - 1
         node[i].generateKeyPair()
-        node[i].assignInitialStake()
-        gs.totalStake += node[i].stake
         node[i].setNeighbors(nbrs)
         #print(i, ":", node[i].neighbors)
+    gs.assignInitialStake(node)
     gs.storePublicKeys(node)
     msg = Message("a")
     event = Event(gs.time, gs.blockDelay[0][1], 0, 1, "send", msg)
