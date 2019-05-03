@@ -17,4 +17,4 @@ Algorand block generation with fail stop adversary --> done
 
 Algorand with Byzantine adversary --> 20% done (till adversary proposing 2 blocks at once)
 
-Usage: python3 Mod_Algorand.py <#users> <#blocks> <normal/fs/byz>
+Usage: python3 Algorand.py <#users> <#blocks> <normal/fs/byz>
