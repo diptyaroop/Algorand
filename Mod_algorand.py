@@ -4,17 +4,19 @@ import math
 import ecdsa
 import numpy as np
 import hashlib
-import time
 from scipy.stats import binom
+import sys
+from threading import Lock, Thread
+import time
 
 seqID = 0
 
 class GlobalState:
     def __init__(self):
-        self.INF = 99999
+        self.globalState = "init"
         self.seqID = 0
         self.time = 0
-        self.numNodes = 10
+        self.numNodes = int(sys.argv[1])
         self.blockDelay = []
         self.nonBlockDelay = []
         self.pubKeyDB = {}
@@ -25,12 +27,30 @@ class GlobalState:
         self.t_final = 5
         self.lambda_proposal = 3
         self.lambda_block = 30
+        self.lambda_step = 3
         # adding blockchain
         self.blockchain = []
         self.blockchain.append(Block(self.genesisMsg, 0))
         self.lastBlockIndex = 0
         self.pubKey_list = []
         self.roundNum = 0
+        self.T = 2/3#Changed to 1/5 from 2/3 Kami
+        self.lock = Lock()
+        self.blockInserted = False
+        self.failStopParameter = 10
+        self.byzParameter = 10
+        self.algoStartTime = 0
+        self.algoEndTime = 0
+
+    def terminate(self):
+        exit(0)
+
+    def startBAstar(self, nodes):
+        for node in nodes:
+            if (node.id % self.failStopParameter == 0 and sys.argv[3] == "fs"):
+                #print("id = ", node.id, "I am adversary, won't participate in consensus")
+                continue
+            node.BAstar(self)
 
     def setBlockDelay(self, mean, std):
         s = np.random.normal(mean, std, gs.numNodes * gs.numNodes)
@@ -38,7 +58,7 @@ class GlobalState:
         for i in range(gs.numNodes):
             tmpList = [0.0] * gs.numNodes
             for j in range(i+1):
-                if(i==j):
+                if(i==j or (i%self.byzParameter==0 and j%self.byzParameter==0)):
                     tmpList[i] = 0
                 else:
                     tmpList[j] = round(max(0, s[index])/1000, 3) # in msec, so dividing by 1000 to make it in sec
@@ -47,7 +67,6 @@ class GlobalState:
         for i in range(gs.numNodes):
             for j in range(i+1):
                 self.blockDelay[j][i] = self.blockDelay[i][j]
-
 
     def cleanup(self, nodes, firstTime=False):
         if firstTime == False:
@@ -62,7 +81,7 @@ class GlobalState:
         for i in range(gs.numNodes):
             tmpList = [0.0] * gs.numNodes
             for j in range(i+1):
-                if(i==j):
+                if(i==j or (i%self.byzParameter==0 and j%self.byzParameter==0)):
                     tmpList[i] = 0
                 else:
                     tmpList[j] = round(max(0, s[index])/1000, 3) # in msec, so dividing by 1000 to make it in sec
@@ -76,12 +95,10 @@ class GlobalState:
         tmpStake = np.random.uniform(1, 50.1, len(nodes))
         index=0
         for node in nodes:
-            #print(tmpStake[index])
             node.stake = math.floor(tmpStake[index])
             index +=1
             gs.totalStake +=node.stake
         self.stake = math.floor(random.uniform(1, 50.1))
-        #print("stake = ",self.stake)
         return
 
     def storePublicKeys(self, nodes):
@@ -111,6 +128,12 @@ class Node:
         self.state = "" # to simulate various states
         self.step = 0
         self.priority_payload = []
+        self.vote_dictionary = dict()
+        self.maximum_key = -1
+        self.MAXSTEPS = 10
+        self.new_max_key = None
+        self.byz = False
+        self.flag = -1
         return
 
     def setNeighbors(self, nbr):
@@ -123,9 +146,9 @@ class Node:
         #signature = self.prKey.sign(b"message")
         #try:
         #    node.pubKey.verify(signature, b"message")
-        #    print("good signature")
+        #    #print("\ngood signature")
         #except BadSignatureError:
-        #    print("BAD SIGNATURE")
+        #    #print("\nBAD SIGNATURE")
         #open("private.pem","wb").write(sk.to_pem())
         #open("public.pem","wb").write(vk.to_pem())
 
@@ -136,12 +159,12 @@ class Node:
 
     def send(self, gs, event):
         if(event.msg.checkIfNodeVisited(self.id) == True):
-            #print("Silently discarding")
+            ##print("Silently discarding")
             return # silently discarding
         if (gs.time > event.timeout):
             # stale message, discarding
             return
-        print("Node "+str(event.getSrc()) + " send to Node " + str(event.getDest()) + " at time = " + str(event.getTimeStart()))
+        ##print("Node "+str(event.getSrc()) + " send to Node " + str(event.getDest()) + " at time = " + str(event.getTimeStart()))
         event.msg.addNodeToVisited(self.id)
         newEvent = Event()
         newEvent.timeStart = event.getTimeEnd()
@@ -154,21 +177,20 @@ class Node:
         newEvent.timeout = event.timeout
         newEvent.action = "recv"
         newEvent.msg = event.msg
-        #curNode = newEvent.getSrc()
-        #for nbr in node[curNode].neighbors:
-        #print("Node = "+str(curNode)+" , neighbor = "+str(nbr))
         heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
         gs.incrementSeqID()
         return
-    
+
+
+
     def recv(self, gs, event):
         if (gs.validateSignature(event) == False):
-            print("Invalid signature, abort\n")
+            #print("Invalid signature, abort\n")
             return
         if(gs.time > event.timeout):
             #stale message, discarding
             return
-        print("Node "+str(event.getDest()) + " recvd from Node " + str(event.getSrc()) + " at time = " + str(event.getTimeStart()))
+        ##print("Node "+str(event.getDest()) + " recvd from Node " + str(event.getSrc()) + " at time = " + str(event.getTimeStart()))
         curNode = event.getDest()
         #if(self.state == "wait_for_proposal"):
         self.recv_buffer.append(event)
@@ -186,16 +208,12 @@ class Node:
                 gs.incrementSeqID()
         except:
             print("EXCEPTION")
-        #else:
-        #    print("Node ",self.id," will now start processing recv_buffer.")
-            # PROBLEM
-            # SOMEHOW ONLY ONE NODE IS EXECUTING THIS ENTIRE THING
         return
 
+    
     def PRG(self, seed):
     #def
         #Solution 1
-        #print(random.getrandbits(256))
         #Solution 2
         #value=np.random.randint(0,256)
         #local_message="abcdads"
@@ -208,22 +226,13 @@ class Node:
         return math.factorial(n)/(math.factorial(r) * math.factorial(n-r))
 
     def binomial_sum(self, j, w, p):
-        #print("CHECK IF THIS IS WORKING CORRECTLY")
         k=0
         binoSum = 0.0
         while(k<j and j<=w):
             binoSum += self.nCr(w, k) * pow(p, k) * pow((1-p), (w-k))
             k += 1
-        #print(j,w,p, binoSum)
+        ##print(j,w,p, binoSum)
         return binoSum
-
-        '''if j == 0:
-            self.bin_result.append(binom.rvs(size=0,n=n,p=p))
-            return self.bin_result[0]
-        if j < len(self.bin_result):
-            return self.bin_result[j]
-        self.bin_result.append(self.bin_result[-1]+binom.rvs(size=j,n=n,p=p) )
-        return self.bin_result[-1]'''
 
     def calc_hashlen(self, my_hash):
         bits = 0
@@ -235,7 +244,6 @@ class Node:
 
     def sortition(self, secret_key, seed, threshold, w, W):
         pi = (str(self.PRG(str(seed)))).encode('utf-8')  # seed = <hash of prev rnd || rnd num || step num >
-        #print(pi)
         signature = secret_key.sign(pi) # my_hash has the signature
         my_hash = signature.hex()
         p = threshold/W
@@ -245,7 +253,6 @@ class Node:
         hash_2hashLen = my_hash/pow(2,hashlen)
         l_limit = self.binomial_sum(j,w,p)
         u_limit = self.binomial_sum(j+1,w,p)
-        #print(hash_2hashLen, l_limit, u_limit, j)
         while (hash_2hashLen<l_limit or hash_2hashLen>=u_limit) and j<=w:
             j += 1
             l_limit = self.binomial_sum(j,w,p)
@@ -262,19 +269,7 @@ class Node:
     def waitForPriorityProposals(self, gs):
         #add event to wait for gs.lambda_proposal time
         self.state = "wait_for_proposal"
-        newEvent = Event()
-        newEvent.timeStart = gs.time + gs.lambda_proposal
-        newEvent.src = self.id
-        newEvent.timeEnd = newEvent.timeStart
-        newEvent.dest = self.id
-        newEvent.action = "processRecvBuffer"
-        newEvent.msg = Message("start processing recv_buffer")
-        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
-        gs.incrementSeqID()
-        return
- 
-    def waitForBlockPriorityProposals(self, gs): # DIPTYAROOP : I don't know if this function is supposed to be used.
-        self.state = "wait_for_proposal"
+
         newEvent = Event()
         newEvent.timeStart = gs.time + gs.lambda_proposal
         newEvent.src = self.id
@@ -283,19 +278,6 @@ class Node:
         newEvent.action = "processRecvBuffer"
         newEvent.msg = Message("start processing recv_buffer")
 
-        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
-        gs.incrementSeqID()
-        return
-
-    def waitForVotes(self, gs):
-        self.state = "wait_for_votes"
-        newEvent = Event()
-        newEvent.timeStart = gs.time + gs.lambda_proposal
-        newEvent.src = self.id
-        newEvent.timeEnd = newEvent.timeStart
-        newEvent.dest = self.id
-        newEvent.action = "countVotes"
-        newEvent.msg = Message("start counting votes")
         heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
         gs.incrementSeqID()
         return
@@ -307,16 +289,19 @@ class Node:
             my_hash = payload_list[1]
             subUser = payload_list[2]
             priority = payload_list[3]
-            node_id = payload_list[4]
-            payload = str(roundno)+"-"+str(my_hash)+"-"+str(subUser)+"-"+str(priority)+"-"+str(node_id) # also concatenate round no. here
+            id_pubKey = payload_list[4]
+            payload = str(roundno)+"-"+str(my_hash)+"-"+str(subUser)+"-"+str(priority)+"-"+str(id_pubKey) # also concatenate round no. here
             # "-" will help to split the parameters easily
+        #self.send(payload) # send payload to neighbors. How many neighbors ?
             msg = Message(payload)
-            event = Event(gs.time, gs.nonBlockDelay[self.id][self.id], gs.time+gs.lambda_proposal, self.id, self.id, "send", msg)
+            # event = Event(gs.time, gs.nonBlockDelay[self.id][self.id], gs.time+gs.lambda_proposal, self.id, self.id, "send", msg)
+            event = Event(gs.time, gs.nonBlockDelay[self.id][self.id], self.id, self.id, "send", msg)
             self.recv_buffer.append(event)
             self.waitForPriorityProposals(gs)
             for neighbor in self.neighbors:
                 msg = Message(payload)
-                event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], gs.time+gs.lambda_proposal, self.id, neighbor, "send", msg)
+                # event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], gs.time+gs.lambda_proposal, self.id, neighbor, "send", msg)
+                event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], self.id, neighbor, "send", msg)
                 heapq.heappush(eventQ, (event.getTimeStart(), gs.seqID, event))
                 gs.incrementSeqID()
         elif typeOfGossip == "voting":
@@ -330,11 +315,11 @@ class Node:
             self.state = "gossiping_vote"
             for neighbor in self.neighbors:
                 msg = Message(payload)
-                event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], gs.time+gs.lambda_proposal, self.id, neighbor, "send", msg)
+                event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], self.id, neighbor, "send", msg)
                 heapq.heappush(eventQ, (event.getTimeStart(), gs.seqID, event))
                 gs.incrementSeqID()
+
         elif  typeOfGossip == "blockProposal": #len(payload_list) == 7: 
-            print("typeOfGossip = blockProposal, id = ", self.id)
             # block proposal
             prevBlockHash = payload_list[0]
             rand256 = payload_list[1]
@@ -347,13 +332,22 @@ class Node:
             # self.waitForBlockPriorityProposals(gs)
             self.state = "wait_for_proposal"
             for neighbor in self.neighbors:
+                if(sys.argv[3]=="byz" and self.byz==True and neighbor%gs.byzParameter==0):
+                    continue
                 msg = Message(payload)
-                timeout = gs.time+gs.lambda_block+gs.lambda_proposal
-                event = Event(gs.time, gs.blockDelay[self.id][neighbor], timeout , self.id, neighbor, "send", msg)
-                print("sending to ", neighbor, "at ", event.getTimeStart(), "timenow = ", gs.time)
+                event = Event(gs.time, gs.nonBlockDelay[self.id][neighbor], self.id, neighbor, "send", msg)
                 heapq.heappush(eventQ, (event.getTimeStart(), gs.seqID, event))
                 gs.incrementSeqID()
-
+            if(sys.argv[3]=="byz" and self.byz==True and neighbor%gs.byzParameter==0):
+                idx=0
+                while(idx<=gs.numNodes):
+                    if(self.id == idx):
+                        continue
+                    msg = Message(payload)
+                    event = Event(gs.time, gs.nonBlockDelay[self.id][idx], self.id, idx, "send", msg)
+                    heapq.heappush(eventQ, (event.getTimeStart(), gs.seqID, event))
+                    gs.incrementSeqID()
+                    idx +=gs.byzParameter
 
     def processRecvBuffer(self):
         highestPriority = -1.0
@@ -373,9 +367,9 @@ class Node:
         cleanupEvent.action = "cleanup"
         heapq.heappush(eventQ, (cleanupEvent.getTimeStart(), gs.seqID, cleanupEvent))
         gs.incrementSeqID()
-        print("According to Node ",self.id," ",userWithHighestPriority, " is the highest priority user.")
+        #print("According to Node ",self.id," ",userWithHighestPriority, " is the highest priority user.")
         if(userWithHighestPriority == self.id):
-            print("I, Node ",self.id, ", am going to propose the next block, subuser = ", subUserWithHighestPriority)
+            #print("I, Node ",self.id, ", am going to propose the next block, subuser = ", subUserWithHighestPriority)
             newEvent = Event()
             newEvent.timeStart = gs.time
             newEvent.src = self.id
@@ -385,39 +379,18 @@ class Node:
             newEvent.msg = Message("proposeBlock")
             heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
             gs.incrementSeqID()
-        self.checkIfCommitteeMember(gs)
-        return
-
-    def checkIfCommitteeMember(self, gs):
-        threshold = gs.t_step
-        w = self.stake
-        W = gs.totalStake
-        roundno=len(gs.blockchain) - 1
-        hash_prev=hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest() # Keep structure later
-        seed=hash_prev+str(roundno)+str(1)
-        hashVal, pi, j = self.sortition(self.prKey, seed, threshold, w, W)
-
-        if j > 0 : # I am a committee member
-            self.state = "wait_for_proposal"
-            newEvent = Event()
-            newEvent.timeStart = gs.time + gs.lambda_proposal + gs.lambda_block
-            newEvent.src = self.id
-            newEvent.timeEnd = newEvent.timeStart
-            newEvent.dest = self.id
-            newEvent.action = "checkBlockProposal"
-            newEvent.msg = Message("checkBlockProposal") 
-            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
-            gs.incrementSeqID()
         return
 
     def proposeBlock(self, gs):
+        if (self.id % gs.failStopParameter == 0 and sys.argv[3] == "fs"):
+            print("id = ", self.id, ", I am fs adversary, won't propose block")
+            return
+        gs.globalState = "blockProposal"
         #broadcast block to be proposed, delay = node.blockDelay
-        print("Node ",self.id, " reporting for proposing a new block")
-        print("neighbors : ", self.neighbors)
-        message = "Block created by Node "+str(self.id)+" at round "+ str(gs.roundNum) # need to update round
+        #print("\nNode ",self.id, " reporting for proposing a new block")
+        message = "Block created by Node "+str(self.id)+" at round "+str(len(gs.blockchain)-1)
         # using PRG code here. Can make it modular later.
-        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8'))
-
+        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
         block = Block(message, prevBlockHash)
         payload_list = []
         payload_list.append(prevBlockHash)
@@ -425,6 +398,16 @@ class Node:
         for item in self.priority_payload:
             payload_list.append(item)
         self.gossip(gs, payload_list, "blockProposal")
+        if(self.byz==True and sys.argv[3] == "byz"):
+            print("id = ", self.id, ", I am byzantine, proposing extra block")
+            message = "Another block created by Node "+str(self.id)+" at round "+str(len(gs.blockChain)-1)
+            block = Block(message, prevBlockHash)
+            payload_list = []
+            payload_list.append(prevBlockHash)
+            payload_list.append(random.getrandbits(256))
+            for item in self.priority_payload:
+                payload_list.append(item)
+            self.gossip(gs, payload_list, "blockProposal")
         return
 
     def checkBlockProposal(self,gs):
@@ -437,12 +420,9 @@ class Node:
         #at end if flag=0 then create empty block and vote on it
 
         # Have made a global list of public keys and can access the same using index
-        print("I, ", self.id, " am a committee member")
-        print("len(recv_buffer) = "+str(len(self.recv_buffer)))
+        #print("\n:) len(recv_buffer) = "+str(len(self.recv_buffer)))
         local_buffer = None
         local_priority = 2**257
-
-        #Vote for highest priority block
         for i in range(len(self.recv_buffer)):
             msg = self.recv_buffer[i].getMessage().split("-")
             if len(msg) == 7:
@@ -450,13 +430,13 @@ class Node:
                 pubKey = gs.pubKey_list[int(msg[-1])]
                 prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
                 roundno=len(gs.blockchain) - 1
+                #print("Round->",roundno)
                 seed=prevBlockHash+str(roundno)+str(0)
                 try:
                     pubKey.verify(bytes.fromhex(msg[3]),str(self.PRG(seed)).encode('utf-8'))
-                    #print("Save me God.")
                     if local_buffer == None or priority<local_priority:
                         local_buffer = []
-                        prevBlockHash = prevBlockHash # prevHash
+                        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest() # prevHash
                         sha_256 = msg[1] # sha256
                         curBlockHash = hashlib.sha256((prevBlockHash+sha_256).encode('utf-8')).hexdigest()
                         roundno = roundno
@@ -473,7 +453,8 @@ class Node:
 
                         local_priority = priority
                 except:
-                    print("Validation failure")
+                    pass
+                    #print("\nValidation failure")
         if local_buffer == None:
             # empty block
             prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
@@ -487,42 +468,321 @@ class Node:
             hash_prev=hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
             seed=hash_prev+str(roundno)+str(self.step) # DIPTYAROOP : CHECK IF NODE.STEP IS CORRECT
             vrf_output = self.PRG(seed)
-            local_buffer = []
+            local_buffer=[]
             local_buffer.append(prevBlockHash)
             local_buffer.append(curBlockHash)
             local_buffer.append(roundno)
             local_buffer.append(step)
             local_buffer.append(subUserIndex)
-            local_buffer.append(vrf_output)  
-        
-        vote =""
-        for item in local_buffer:
-            vote = vote + "," + str(item)
-        self.gossip(gs, local_buffer, "voting")
-        
-        return
+            local_buffer.append(vrf_output)
+        #print("::LOCAL BUFFER::")
+        #for i in local_buffer:
+            #print(i)
+        return local_buffer  
 
-    
-    #incomingMsgs is a bufer for storage of incoming messages?
-    def countVotes(self, gs):#(self, ctx, round, step,T,tao ,lamda):
-        return
-    	#counts={}# // hash table, new keys mapped to 0
-    	#voters={}
-    	#msgs=incomingMsgs[rounds][step]
-    	#for m in msgs:
-		    #votes,value,sorthash=ProcessMsg(ctx,tao ,m)
-    		#if pk in voters or votes ==0:
-			    #continue
-		    #voters = voters | {pk}
-		    #counts[value] + = votes
-		    #if counts[value] > T * tao:#// if we got enough votes, then output this value
-    			#return value
-	#return "timeout"
-    
+        
+
+    def countVotes(self, gs):
+
+        self.vote_dictionary = dict()
+        #print("PRINTING VALUES")
+        for i in range(len(self.recv_buffer)):
+            value = self.recv_buffer[i].getMessage()
+            # prevBlockHash = msg[0]
+            # curBlockHash = msg[1]
+            # roundno = msg[2]
+            # step = msg[3]
+            # subUser = msg[4]
+            # vrf_output = msg[5]
+
+            # value = str(prevBlockHash) + "-" + str(curBlockHash) + "-" + str(roundno) + "-" + str(step) + "-" + str(subUser) + "-" + str(vrf_output)
+            if value in self.vote_dictionary:
+                self.vote_dictionary[value] = self.vote_dictionary[value] + 1
+            elif value:
+                self.vote_dictionary[value] = 1
+        if(len(self.recv_buffer)>0):
+            maximum_key = max(self.vote_dictionary, key=self.vote_dictionary.get)
+            # if self.isCommittee == True:
+            if self.vote_dictionary[maximum_key] > (gs.T * gs.t_step):
+                # store this maximu_key
+                self.maximum_key = maximum_key
+            else:
+                # timeout
+                self.maximum_key = -1
+        else:
+            self.maximum_key = -1        
+        return self.maximum_key
+
+    def committeeElection(self, gs):
+        threshold = gs.t_step
+        w = self.stake
+        W = gs.totalStake
+        roundno=len(gs.blockchain) - 1
+        hash_prev=hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest() # Keep structure later
+        seed=hash_prev+str(roundno)+str(self.step)
+        hashVal, pi, j = self.sortition(self.prKey, seed, threshold, w, W)
+        self.step+=1
+        if j > 0:
+            return True
+        else:
+            return False
+
+    def Reduction(self, gs):
+        #print("\nReduction called")
+        if self.committeeElection(gs):#First committee election takes place step=1
+            #print("I", self.id, ", am a committee member")
+            #33sec delay
+            newEvent = Event()
+            newEvent.timeStart = gs.time + gs.lambda_block + gs.lambda_step
+            newEvent.src = self.id
+            newEvent.timeEnd = newEvent.timeStart
+            newEvent.dest = self.id
+            newEvent.action = "reduction1"
+            newEvent.msg = Message("reduction1")
+            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+            gs.incrementSeqID()
+            # local_buffer=self.checkBlockProposal(gs)#Committee receives all the values and stores the one with minimum priority
+            # self.committeeVote(local_buffer)#Committee members vote
+        # 3 sec DELAY
+        
+        
+
+    def reduction1(self, gs):
+        local_buffer=self.checkBlockProposal(gs)#Committee receives all the values and stores the one with minimum priority
+        #print("\nLocal buffer in reduction1: ",local_buffer)
+        self.committeeVote(local_buffer, gs)
+        newEvent = Event()
+        newEvent.timeStart = gs.time + gs.lambda_step
+        newEvent.src = self.id
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = self.id
+        newEvent.action = "reduction2"
+        newEvent.msg = Message("reduction2")
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+
+    def reduction2(self, gs):
+        #print("\nReduction2")
+        max_key=self.countVotes(gs)#Call CountVotes get block in temp_block variable
+        # #print("MAXIMUM KEY=",max_key)
+        if self.committeeElection(gs):#Second committee election takes place step=2
+            if(max_key!=-1):
+                self.committeeVote(self.maximum_key.split("-"), gs)#if committee member has temp_block==-1 Vote for empty block
+            else:#else committee member votes for current block
+                local_buffer=self.getEmptyString()
+                self.committeeVote(local_buffer.split("-"), gs)
+        newEvent = Event()
+        newEvent.timeStart = gs.time + gs.lambda_step
+        newEvent.src = self.id
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = self.id
+        newEvent.action = "reduction3"
+        newEvent.msg = Message("reduction3")
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+
+    def reduction3(self, gs):
+        max_key=self.countVotes(gs)#Call CountVotes get block in temp_block2 variable
+        if(max_key==-1):#if temp_block2==-1 return empty block
+            max_key=self.getEmptyString()
+        else:#else return block received
+            pass
+        self.maximum_key = max_key
+        newEvent = Event()
+        newEvent.timeStart = gs.time
+        newEvent.src = self.id
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = self.id
+        newEvent.action = "BinaryBAstar"
+        newEvent.msg = Message("BinaryBAstar")
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+
+        #self.BinaryBAstar()
+        # return max_key
+
+    def getEmptyString(self):
+        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
+        sha_256 = "Empty" # sha256
+        curBlockHash = hashlib.sha256((prevBlockHash+sha_256).encode('utf-8')).hexdigest()
+        roundno = len(gs.blockchain) - 1
+        step = self.step
+        subUserIndex = "Empty"
+        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
+        seed=prevBlockHash+str(roundno)+str(0) # DIPTYAROOP : CHECK IF NODE.STEP IS CORRECT
+        vrf_output = self.PRG(seed)
+        return str(prevBlockHash) + "-" + str(curBlockHash) + "-" + str(roundno) + "-" + str(step) + "-" + str(subUserIndex) + "-" + str(vrf_output)
+
+    def stringtoBuffer(self,string):
+        local_buffer=[]
+        for i in string.split('-'):
+            local_buffer.append(i)
+        return local_buffer
+
+    def BAstar(self, gs):
+        self.Reduction(gs)#First call Reduction
+        #self.BinaryBAstar()#Then call BinaryBAstar
+        # fin=self.countVotes()
+        # if(self.new_max_key!=fin):
+        #     self.new_max_key = self.getEmptyString()
+            #Check previous hash block if it matches enter empty in blockchain. Else ignore
+        #self.insertBlock(self.new_max_key)
+
+    def insertBlock(self, new_max_key, gs):
+        gs.lock.acquire()
+        roundno=str(len(gs.blockchain)-1)
+        prevBlockHash = hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
+        #print("Previous Block Hash ",prevBlockHash)
+        #print("What I got ",new_max_key.split("-")[0])
+        if prevBlockHash == new_max_key.split("-")[0]:
+            block = Block(str(new_max_key),prevBlockHash)
+            gs.blockchain.append(block)
+            gs.lastBlockIndex += 1
+            #print("Printing Blockchain:")
+            #print("######################")
+            #for i in gs.blockchain:
+            #print(str(len(gs.blockchain)-1),",",block,",",new_max_key,",",prevBlockHash)
+            #print("######################")
+            gs.globalState = "blockAdded"
+        gs.lock.release()
+
+
+    def BinaryBAstar(self, gs):
+        r=self.maximum_key
+        empty=self.getEmptyString()
+        # while self.step<self.MAXSTEPS:
+
+        #     self.step += 1
+        #     #PART 1
+        if self.committeeElection(gs):
+            #local_buffer=self.checkBlockProposal(gs)#Committee receives all the values and stores the one with minimum priority
+            if self.maximum_key == -1: # DIPTYAROOP
+                self.maximum_key = self.getEmptyString()
+            self.committeeVote(self.maximum_key.split("-"), gs)#Committee members vote
+            newEvent = Event()
+            newEvent.timeStart = gs.time + gs.lambda_step
+            newEvent.src = self.id
+            newEvent.timeEnd = newEvent.timeStart
+            newEvent.dest = self.id
+            newEvent.action = "BinaryBAstar1"
+            newEvent.msg = Message("BinaryBAstar1")
+            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+            gs.incrementSeqID()
+
+
+    def BinaryBAstar1(self, gs):
+        old=self.maximum_key
+        self.countVotes(gs)#Call CountVotes get block in temp_block variable
+        if self.maximum_key==-1:
+            self.maximum_key=old
+        elif self.maximum_key!=self.getEmptyString():
+            for i in range(3):
+                if self.committeeElection(gs):
+                    self.committeeVote(self.maximum_key.split("-"), gs) #Committee members vote
+
+            if self.step == 7:
+                if self.committeeElection(gs):
+                    self.committeeVote(self.maximum_key.split("-"), gs) #Committee members vote
+            self.new_max_key = self.maximum_key
+            newEvent = Event()
+            newEvent.timeStart = gs.time + gs.lambda_step
+            newEvent.src = self.id
+            newEvent.timeEnd = newEvent.timeStart
+            newEvent.dest = self.id
+            newEvent.action = "BAstarFinal"
+            newEvent.msg = Message("BAstarFinal")
+            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+            gs.incrementSeqID()
+            return
+        if self.committeeElection(gs):
+            self.committeeVote(self.maximum_key.split("-"), gs)
+        newEvent = Event()
+        newEvent.timeStart = gs.time + gs.lambda_step
+        newEvent.src = self.id
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = self.id
+        newEvent.action = "BinaryBAstar2"
+        newEvent.msg = Message("BinaryBAstar2")
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+
+    def BinaryBAstar2(self, gs):
+        self.countVotes(gs)#Call CountVotes get block in temp_block variable
+        if self.maximum_key==-1:
+            self.maximum_key=self.getEmptyString()
+        elif self.maximum_key==self.getEmptyString():
+            for i in range(3):
+                if self.committeeElection(gs):
+                    self.committeeVote(self.maximum_key.split("-"), gs)
+            self.new_max_key = self.maximum_key
+            newEvent = Event()
+            newEvent.timeStart = gs.time + gs.lambda_step
+            newEvent.src = self.id
+            newEvent.timeEnd = newEvent.timeStart
+            newEvent.dest = self.id
+            newEvent.action = "BAstarFinal"
+            newEvent.msg = Message("BAstarFinal")
+            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+            gs.incrementSeqID()
+            return
+        if self.committeeElection(gs):
+            self.committeeVote(self.maximum_key.split("-"), gs)
+        newEvent = Event()
+        newEvent.timeStart = gs.time + gs.lambda_step
+        newEvent.src = self.id
+        newEvent.timeEnd = newEvent.timeStart
+        newEvent.dest = self.id
+        newEvent.action = "BinaryBAstar3"
+        newEvent.msg = Message("BinaryBAstar3")
+        heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        gs.incrementSeqID()
+
+    def BinaryBAstar3(self, gs):
+        r=self.countVotes(gs)#Call CountVotes get block in temp_block variable
+        if r==-1:
+            if random.choice([0,1])==0:
+                pass
+            else:
+                self.maximum_key=self.getEmptyString()
+
+        if self.step<=self.MAXSTEPS:
+            newEvent = Event()
+            newEvent.timeStart = gs.time
+            newEvent.src = self.id
+            newEvent.timeEnd = newEvent.timeStart
+            newEvent.dest = self.id
+            newEvent.action = "BinaryBAstar"
+            newEvent.msg = Message("BinaryBAstar")
+            heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+            gs.incrementSeqID()
+        else:
+            #print("ERROR ENCOUNTERED")
+            pass
+
+    def BAstarFinal(self, gs):
+        #old=self.maximum_key
+        fin=self.countVotes(gs)
+        if(self.new_max_key!=fin):
+            self.new_max_key = self.getEmptyString()
+            # Check previous hash block if it matches enter empty in blockchain. Else ignore
+        self.insertBlock(self.new_max_key, gs)
+
+    def committeeVote(self,local_buffer, gs):
+        #print("\nInside committeeVote",local_buffer)
+        self.gossip(gs, local_buffer, "voting")
+        # newEvent = Event()
+        # newEvent.timeStart = gs.time + gs.lambda_step
+        # newEvent.src = self.id
+        # newEvent.timeEnd = newEvent.timeStart
+        # newEvent.dest = self.id
+        # newEvent.action = "countVotes"
+        # newEvent.msg = Message("countVotes") 
+        # heapq.heappush(eventQ, (newEvent.getTimeStart(), gs.seqID, newEvent))
+        # gs.incrementSeqID()
 
 
 class Event:
-    def __init__(self, start=0, delay=0, timeout=99999, src=0, dest=0, action="none", msg="none"):
+    def __init__(self, start=0, delay=0, src=0, dest=0, action="none", msg="none", timeout=99999):
         self.timeStart = start
         self.src = src
         self.dest = dest
@@ -569,22 +829,22 @@ class Block:
 
 
 def start(gs, nodes):
-    cleanupFirstTime = True
-    #print(len(nodes))
+    gs.algoStartTime = time.time()
     for node in nodes:
-        #print(node.id, node.stake)
         threshold = gs.t_proposer
         role = "proposer"
         w = node.stake
         W = gs.totalStake
-        #Deba
         node.step = 0
         roundno=len(gs.blockchain) - 1
         hash_prev=hashlib.sha256((gs.blockchain[gs.lastBlockIndex].msg).encode('utf-8')).hexdigest()
         seed=hash_prev+str(roundno)+str(0)
+        node.step=1
         #yan
         hashVal, pi, subUser = node.sortition(node.prKey, seed, threshold, w, W)
+        
         if(subUser>0): # node selected as block proposer
+            #print("\nNode = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
             highestPriority = -1
             subUserWithHighestPriority = -1
             for j in range(0, subUser):
@@ -596,52 +856,80 @@ def start(gs, nodes):
             payload_list = []
             payload_list.append(roundno)
             payload_list.append(hashVal)
-            #print("Debayan hashval",hashVal)
             payload_list.append(subUserWithHighestPriority)
             payload_list.append(highestPriority)
             payload_list.append(node.id)
             node.priority_payload = payload_list
-            node.gossip(gs, payload_list, "priority")
-        else:
-            node.checkIfCommitteeMember(gs)                
-        print("Node = ", node.id, "stake = ", node.stake, "subusers = ", subUser)
-        #print("SORTITION PART DONE, NOW BLOCK PROPOSAL PART")
+            node.gossip(gs, payload_list, "priority")                
     #SORTITION PART DONE, NOW BLOCK PROPOSAL PART
-    curTime = 0
-    while True:
-        try:
-            ele = heapq.heappop(eventQ)
-            prevTime = curTime
-            curTime = round(ele[0], 3)
-            gs.time = curTime
-            if(curTime - prevTime >= gs.lambda_block):
-                for node in nodes:
-                    node.waitForVotes(gs)
-            curEvent = ele[2]
-            print("current time = " + str(gs.time))
-            if curEvent.getAction() == "send":
-                nodes[curEvent.src].send(gs, curEvent)
-            elif curEvent.getAction() == "recv":
-                nodes[curEvent.dest].recv(gs, curEvent)
-            elif curEvent.getAction() == "processRecvBuffer":
-                nodes[curEvent.src].processRecvBuffer()
-            elif curEvent.getAction() == "proposeBlock":
-                nodes[curEvent.src].proposeBlock(gs)
-            elif curEvent.getAction() == "checkBlockProposal":
-                nodes[curEvent.src].checkBlockProposal(gs)
-            elif curEvent.getAction() == "countVotes":
-                nodes[curEvent.src].countVotes(gs)
-            elif curEvent.getAction() == "cleanup":
-                gs.cleanup(nodes, cleanupFirstTime)
-                cleanupFirstTime = False
 
-        except IndexError as e:
-            print("No events remaining. ", e)
-            break
-    return
+
+def bootstrap(gs, nodes):
+    cleanupFirstTime = True
+    Blocks=1
+    for qwerty in range(Blocks):
+        start(gs, nodes)
+        
+        while True:
+            try:
+                ele = heapq.heappop(eventQ)
+                curTime = round(ele[0], 3)
+                gs.time = curTime
+                #print("\ncurrent time = " + str(gs.time))
+                curEvent = ele[2]
+                if curEvent.getAction() == "send":
+                    nodes[curEvent.src].send(gs,curEvent)
+                elif curEvent.getAction() == "recv":
+                    nodes[curEvent.dest].recv(gs,curEvent)
+                elif curEvent.getAction() == "processRecvBuffer":
+                    nodes[curEvent.src].processRecvBuffer()
+                elif curEvent.getAction() == "proposeBlock":
+                    nodes[curEvent.src].proposeBlock(gs)
+                elif curEvent.getAction() == "checkBlockProposal":
+                    nodes[curEvent.src].checkBlockProposal(gs)
+                elif curEvent.getAction() == "reduction1":
+                    nodes[curEvent.src].reduction1(gs)
+                elif curEvent.getAction() == "reduction2":
+                    nodes[curEvent.src].reduction2(gs)
+                elif curEvent.getAction() == "reduction3":
+                    nodes[curEvent.src].reduction3(gs)
+                elif curEvent.getAction() == "BinaryBAstar":
+                    nodes[curEvent.src].BinaryBAstar(gs)
+                elif curEvent.getAction() == "BinaryBAstar1":
+                    nodes[curEvent.src].BinaryBAstar1(gs)
+                elif curEvent.getAction() == "BinaryBAstar2":
+                    nodes[curEvent.src].BinaryBAstar2(gs)
+                elif curEvent.getAction() == "BinaryBAstar3":
+                    nodes[curEvent.src].BinaryBAstar3(gs)
+                elif curEvent.getAction() == "BAstarFinal":
+                    nodes[curEvent.src].BAstarFinal(gs)
+                elif curEvent.getAction() == "cleanup":
+                    gs.cleanup(nodes, cleanupFirstTime)
+                    cleanupFirstTime = False
+            except IndexError as e:
+                #print("No events remaining. ", e)
+                #print(gs.globalState, len(gs.blockchain))
+                if(gs.globalState == "blockProposal"):
+                    #gs.globalState =""
+                    gs.startBAstar(nodes)
+                elif(gs.globalState == "blockAdded"):
+                    cleanupFirstTime = True
+                    lengthOfBlockChain = len(gs.blockchain)
+                    if(lengthOfBlockChain > int(sys.argv[2])):
+                        gs.algoEndTime = time.time()
+                        print (sys.argv[1],",", sys.argv[2],",", gs.algoStartTime,",", gs.algoEndTime,",", gs.algoEndTime-gs.algoStartTime)
+                        gs.terminate()
+                    gs.cleanup(nodes, cleanupFirstTime)
+                    cleanupFirstTime = False
+                    start(gs, nodes)
+                else:
+                    gs.terminate()
     
 
 if __name__ == "__main__":
+    if(len(sys.argv) < 4):
+        print("Usage: python3 Mod_Algorand.py <#users> <#blocks> <normal/fs/byz>")
+        exit(0)
     gs = GlobalState()
     node = []
     eventQ = []
@@ -651,7 +939,9 @@ if __name__ == "__main__":
 
     for i in range(gs.numNodes):
         node.append(Node(i))
-        numNeighbors = math.floor(random.uniform(2, 4.1))
+        if(sys.argv[3]=="byz" and i%gs.byzParameter==0):
+            node[i].byz = True
+        numNeighbors = math.floor(random.uniform(3, 8.1))
         nbrs = []
         while(numNeighbors>0):
             newNbr = random.randint(1, gs.numNodes) - 1 
@@ -664,12 +954,12 @@ if __name__ == "__main__":
         #print(i, ":", node[i].neighbors)
     gs.assignInitialStake(node)
     gs.storePublicKeys(node)
-    
-    #msg = Message("a")
-    #event = Event(gs.time, gs.blockDelay[0][1], 0, 1, "send", msg)
+    msg = Message("a")
+    event = Event(gs.time, gs.blockDelay[0][1], 0, 1, "send", msg)
+
     #heapq.heappush(eventQ, (gs.time, gs.seqID, event))
     #gs.incrementSeqID()
     #heapq.heappush(eventQ, (gs.time, gs.seqID, Event(gs.time, gs.blockDelay[0][2], 0, 2, "send", "a")))
     #gs.incrementSeqID()
-    start(gs, node)
+    bootstrap(gs, node)
 
