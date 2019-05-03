@@ -16,3 +16,5 @@ Algorand block generation with fail stop adversary --> done
 (Adversary does not propose block even if proposer, and does not take part in consensus)
 
 Algorand with Byzantine adversary --> 20% done (till adversary proposing 2 blocks at once)
+
+Usage: python3 Mod_Algorand.py <#users> <#blocks> <normal/fs/byz>
