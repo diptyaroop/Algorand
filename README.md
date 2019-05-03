@@ -4,8 +4,8 @@ CS 620 course project
 
 Members:
 Diptyaroop Maji (183050016)
-Abhishek Varma (183050034)
-Debayan Bandyopadhyay (183050038)
+Debayan Bandyopadhyay (183050034)
+Abhishek Varma (183050038)
 
 Built a (somewhat) working Algorand discrete event simulator on Python (using heapq module).
 
